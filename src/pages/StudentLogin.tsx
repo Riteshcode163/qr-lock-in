@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import Navigation from "@/components/Navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -6,21 +6,22 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Camera, CheckCircle2, History } from "lucide-react";
 import { toast } from "sonner";
+import { Html5Qrcode } from "html5-qrcode";
+
+interface AttendanceRecord {
+  sessionId: string;
+  subject: string;
+  timestamp: string;
+  status: string;
+}
 
 const StudentLogin = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [name, setName] = useState("");
   const [rollNo, setRollNo] = useState("");
-  const [showScanner, setShowScanner] = useState(false);
-  const [attendanceMarked, setAttendanceMarked] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
-
-  const mockAttendanceHistory = [
-    { date: "2025-11-01", time: "09:15 AM", subject: "Data Structures", status: "Present" },
-    { date: "2025-11-01", time: "11:30 AM", subject: "Database Systems", status: "Present" },
-    { date: "2025-10-31", time: "09:20 AM", subject: "Data Structures", status: "Present" },
-    { date: "2025-10-31", time: "02:00 PM", subject: "Web Development", status: "Present" },
-  ];
+  const scannerRef = useRef<Html5Qrcode | null>(null);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -30,15 +31,113 @@ const StudentLogin = () => {
     }
   };
 
-  const handleScan = () => {
-    setShowScanner(true);
-    setTimeout(() => {
-      setShowScanner(false);
-      setAttendanceMarked(true);
+  const getDeviceIP = async (): Promise<string> => {
+    try {
+      const response = await fetch("https://api.ipify.org?format=json");
+      const data = await response.json();
+      return data.ip;
+    } catch (error) {
+      return "Unknown";
+    }
+  };
+
+  const startScanning = async () => {
+    setIsScanning(true);
+    try {
+      const scanner = new Html5Qrcode("qr-reader");
+      scannerRef.current = scanner;
+
+      await scanner.start(
+        { facingMode: "environment" },
+        {
+          fps: 10,
+          qrbox: { width: 250, height: 250 },
+        },
+        async (decodedText) => {
+          await handleScanSuccess(decodedText);
+          scanner.stop();
+          setIsScanning(false);
+        },
+        () => {
+          // Scan error - ignore
+        }
+      );
+    } catch (err) {
+      toast.error("Camera Error", {
+        description: "Unable to access camera. Please check permissions."
+      });
+      setIsScanning(false);
+    }
+  };
+
+  const handleScanSuccess = async (decodedText: string) => {
+    try {
+      const qrData = JSON.parse(decodedText);
+      const deviceIP = await getDeviceIP();
+      
+      // Check if attendance already exists
+      const allAttendance = JSON.parse(localStorage.getItem("attendance") || "[]");
+      const existingRecord = allAttendance.find(
+        (record: any) => 
+          record.sessionId === qrData.sessionId && 
+          record.rollNo === rollNo
+      );
+
+      if (existingRecord) {
+        if (existingRecord.deviceIP !== deviceIP) {
+          toast.error("Invalid Device", {
+            description: "Attendance already marked from a different device."
+          });
+          return;
+        } else {
+          toast.error("Already Marked", {
+            description: "Your attendance is already recorded for this session."
+          });
+          return;
+        }
+      }
+
+      // Store attendance
+      const newRecord = {
+        sessionId: qrData.sessionId,
+        subject: qrData.subject,
+        faculty: qrData.faculty,
+        studentName: name,
+        rollNo: rollNo,
+        timestamp: new Date().toISOString(),
+        deviceIP: deviceIP,
+      };
+
+      allAttendance.push(newRecord);
+      localStorage.setItem("attendance", JSON.stringify(allAttendance));
+
       toast.success("Attendance marked successfully!", {
         description: "Device IP has been recorded."
       });
-    }, 2000);
+    } catch (error) {
+      toast.error("Invalid QR Code", {
+        description: "Please scan a valid attendance QR code."
+      });
+    }
+  };
+
+  const stopScanning = () => {
+    if (scannerRef.current) {
+      scannerRef.current.stop();
+      setIsScanning(false);
+    }
+  };
+
+  const getMyAttendance = (): AttendanceRecord[] => {
+    const allAttendance = JSON.parse(localStorage.getItem("attendance") || "[]");
+    return allAttendance
+      .filter((record: any) => record.rollNo === rollNo)
+      .map((record: any) => ({
+        sessionId: record.sessionId,
+        subject: record.subject,
+        timestamp: record.timestamp,
+        status: "Present",
+      }));
   };
 
   if (isLoggedIn) {
@@ -48,40 +147,31 @@ const StudentLogin = () => {
         
         <main className="container mx-auto px-4 py-12">
           <div className="max-w-2xl mx-auto space-y-6">
-            <Card className="border-2 animate-fade-in">
+            <Card className="border-2">
               <CardHeader>
                 <CardTitle className="text-2xl">Welcome, {name}</CardTitle>
                 <CardDescription>Roll Number: {rollNo}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
-                {!attendanceMarked ? (
-                  <div className="space-y-4">
+                <div className="space-y-4">
+                  {!isScanning ? (
                     <Button 
                       size="lg" 
                       className="w-full gap-2"
-                      onClick={handleScan}
-                      disabled={showScanner}
+                      onClick={startScanning}
                     >
                       <Camera className="w-5 h-5" />
-                      {showScanner ? "Scanning..." : "Scan QR Code"}
+                      Scan QR Code
                     </Button>
-                    
-                    {showScanner && (
-                      <div className="bg-muted p-8 rounded-lg flex flex-col items-center gap-4 animate-fade-in">
-                        <Camera className="w-16 h-16 text-primary animate-pulse" />
-                        <p className="text-muted-foreground">Camera activated. Please scan the QR code...</p>
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="bg-primary/10 border-2 border-primary rounded-lg p-6 flex items-center gap-4 animate-scale-in">
-                    <CheckCircle2 className="w-12 h-12 text-primary flex-shrink-0" />
+                  ) : (
                     <div>
-                      <h3 className="font-semibold text-lg">Attendance Marked Successfully</h3>
-                      <p className="text-sm text-muted-foreground">Device IP recorded. Time: {new Date().toLocaleTimeString()}</p>
+                      <div id="qr-reader" className="mx-auto mb-4"></div>
+                      <Button onClick={stopScanning} variant="destructive" className="w-full">
+                        Stop Scanning
+                      </Button>
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
 
                 <Button 
                   variant="outline" 
@@ -93,20 +183,28 @@ const StudentLogin = () => {
                 </Button>
 
                 {showHistory && (
-                  <Card className="animate-fade-in">
+                  <Card>
                     <CardContent className="p-6">
                       <h3 className="font-semibold mb-4">My Attendance History</h3>
-                      <div className="space-y-3">
-                        {mockAttendanceHistory.map((record, index) => (
-                          <div key={index} className="flex justify-between items-center p-3 bg-muted rounded-lg">
-                            <div>
-                              <p className="font-medium">{record.subject}</p>
-                              <p className="text-sm text-muted-foreground">{record.date} • {record.time}</p>
+                      {getMyAttendance().length === 0 ? (
+                        <p className="text-center py-8 text-muted-foreground">
+                          No attendance records found
+                        </p>
+                      ) : (
+                        <div className="space-y-3">
+                          {getMyAttendance().map((record, index) => (
+                            <div key={index} className="flex justify-between items-center p-3 bg-muted rounded-lg">
+                              <div>
+                                <p className="font-medium">{record.subject}</p>
+                                <p className="text-sm text-muted-foreground">
+                                  {new Date(record.timestamp).toLocaleDateString()} • {new Date(record.timestamp).toLocaleTimeString()}
+                                </p>
+                              </div>
+                              <span className="text-sm font-medium text-primary">{record.status}</span>
                             </div>
-                            <span className="text-sm font-medium text-primary">{record.status}</span>
-                          </div>
-                        ))}
-                      </div>
+                          ))}
+                        </div>
+                      )}
                     </CardContent>
                   </Card>
                 )}
@@ -124,7 +222,7 @@ const StudentLogin = () => {
       
       <main className="container mx-auto px-4 py-12">
         <div className="max-w-md mx-auto">
-          <Card className="border-2 animate-fade-in">
+          <Card className="border-2">
             <CardHeader>
               <CardTitle className="text-2xl">Student Login</CardTitle>
               <CardDescription>Enter your details to mark attendance</CardDescription>
